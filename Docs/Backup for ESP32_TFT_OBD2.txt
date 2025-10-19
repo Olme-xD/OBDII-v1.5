@@ -1,0 +1,276 @@
+/*
+ESP32_TFT_ODB2.ino: OBD2 Program for ESP32 & ELM327. It is based on libraries from other creators.
+By Olme Matias
+08/20/2023 - 09/21/2023
+*/
+#include <SD.h>               // SparkFun
+#include <SPI.h>              // SparkFun
+#include <TFT_eSPI.h>         // Bodmer
+#include "Free_Fonts.h"       // Adafruit
+#include "ELMduino.h"         // PowerBroker2
+#include "BluetoothSerial.h"  // Evandro Luis
+
+
+//‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ BLUETOOTH/ELM & DISPLAY SETTINGS
+TFT_eSPI tft = TFT_eSPI();
+BluetoothSerial SerialBT;
+ELM327 myELM327;
+#define ELM_PORT SerialBT
+#define DEBUG_PORT Serial
+#define TFT_GRAY 0x632C
+#define TFT_DARKBLUE 0x216b
+
+
+//‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ DEFINED VALUES
+typedef enum {RPM, SPEED, MPG, UN__USED} obdState; // PIDs
+obdState obdGet = RPM; // OBD2 starting PID
+uint32_t kph;  // KPH used to assign data from ELMduino
+uint32_t mph;  // MPH used to assign data from ELMduino
+uint32_t rpm;  // RPM used to assign data from ELMduino
+float_t maf;   // MAF used to assign data from ELMduino
+uint32_t mpg;  // MPG used to assign calculated data from ELMduino
+String timeWhileOn;   ///////////////////////////////
+uint16_t seconds;     // Used to show for how long //
+uint16_t minutes;     //    the device been on     //
+uint16_t hours;       ///////////////////////////////
+uint64_t timePrevious; // Used to calculate delay
+bool lock = false;   // Used to calculate delay
+String timeDelay;      // Used to calculate delay
+uint8_t address[6] = {0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33}; // Slave device MAC address for SerialBT
+
+
+void setup() {
+  //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ DISPLAY & SERIAL INITIALIZATION
+  tft.init();
+  tft.setRotation(3);
+  DEBUG_PORT.begin(115200);
+  ELM_PORT.begin("404 Unknown", true);
+
+
+  //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ BOOTUP SCREEN
+  tft.fillScreen(TFT_DARKBLUE);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(10, 20);
+  tft.setFreeFont(FF41);
+  tft.print("Created By");
+  tft.setCursor(130, 150);
+  tft.setFreeFont(FF44);
+  tft.print("EWOSHY");
+  tft.setCursor(200, 200);
+  tft.println(":///:"); delay(3000);
+  Retry:
+  
+
+  //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ WAIT UNTIL CONNECTED
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(5, 40);
+  tft.setFreeFont(FF44);
+  tft.print("CONNECTING  TO ");
+  tft.setCursor(5, 85);
+  tft.println("ELM327...");
+  tft.setCursor(5, 220);
+  tft.setFreeFont(FF42);
+  tft.print("RESPONSE ::");
+
+  if (!ELM_PORT.connect(address)) {
+    DEBUG_PORT.println("Couldn't connect to OBD scanner - Phase 1");
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.setCursor(5, 245);
+    tft.setFreeFont(FF41);
+    tft.print("TRYING AGAIN IN 5 SECS...");
+    tft.setCursor(5, 265); tft.print("ERROR ->> PHASE #1");
+    delay(5000); goto Retry;}
+  if (!myELM327.begin(ELM_PORT, true, 2000)) {
+    Serial.println("Couldn't connect to OBD scanner - Phase 2");
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.setCursor(5, 245);
+    tft.setFreeFont(FF41);
+    tft.print("TRYING AGAIN IN 5 SECS...");
+    tft.setCursor(5, 265); tft.print("ERROR ->> PHASE #2");
+    delay(5000); goto Retry;}
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setCursor(5, 245);
+  tft.setFreeFont(FF41);
+  tft.print("CONNECTED!");
+
+
+  //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ SD CARD INITIALIZATION
+  // if (!SD.begin()) {
+  //   Serial.println("SD CARD INITIALIZATION FAILED!!");
+  //   tft.setTextColor(TFT_RED, TFT_BLACK);
+  //   tft.setCursor(5, 265);
+  //   tft.print("SD CARD INITIALIZATION FAILED!!");
+  //   while (1);
+  // }
+
+
+  //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ DISPLAY DATA INITIALIZATION
+  tft.fillScreen(TFT_BLACK);
+  tft.drawFastHLine(250, 160, 480, TFT_GRAY);
+  tft.drawFastVLine(250, 0, 320, TFT_GRAY);
+  tft.setTextColor(TFT_GRAY, TFT_BLACK);
+  tft.setFreeFont(FF41);
+  tft.setCursor(5, 15);
+  tft.print("MPG");
+  tft.setCursor(255, 15);
+  tft.print("SPEED");
+  tft.setCursor(255, 178);
+  tft.print("RPM");
+}
+
+void loop() {
+  timer();
+  switch (obdGet) {
+    //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ RPM
+    case RPM:{
+      if (!lock) {timePrevious = millis(); lock = true;} // Locks it self, until calculatedDelay() runs.
+      tft.setTextColor(TFT_BLUE, TFT_BLACK);
+      float_t tempRPM = myELM327.rpm();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        rpm = (uint32_t)tempRPM;
+        if (rpm <= 999) {
+          String strrpm = String(rpm);
+          strrpm = ("0" + strrpm);
+          tft.drawString(strrpm, 300, 220, 7);}
+        else {
+          tft.drawString(String(rpm), 300, 220, 7);}
+        Serial.print("RPM: "); Serial.println(rpm);
+        calculatedDelay();
+        obdGet = SPEED;}
+      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        tft.drawString(String("----"), 300, 220, 7);
+        myELM327.printError();
+        calculatedDelay();
+        obdGet = SPEED;}
+      break;
+    }
+
+    //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ SPEED
+    case SPEED:{
+      if (!lock) {timePrevious = millis(); lock = true;} // Locks it self, until calculatedDelay() runs.
+      tft.setTextColor(TFT_DARKCYAN, TFT_BLACK);
+      uint32_t tempKPH = myELM327.kph();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        kph = (uint32_t)tempKPH;
+        mph = round(kph * 0.621371);
+        if (mph <= 9) {
+          String strmph = String(mph);
+          strmph = ("0" + strmph);
+          tft.drawString(strmph, 330, 55, 7);}
+        else {
+          tft.drawString(String(mph), 330, 55, 7);}
+        Serial.print("MPH: "); Serial.println(mph);
+        calculatedDelay();
+        obdGet = MPG;}
+      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        tft.drawString(String("--"), 330, 55, 7);
+        myELM327.printError();
+        calculatedDelay();
+        obdGet = MPG;}
+      break;
+    }
+
+    //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ MPG
+    case MPG:{
+      if (!lock) {timePrevious = millis(); lock = true;} // Locks it self, until calculatedDelay() runs.
+      tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
+      float_t tempMAF = myELM327.mafRate();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        maf = (float_t)tempMAF;
+        mpg = round((14.7 * 6.17 * 454 * kph * 0.621371) / (3600 * maf / 100));
+        //mpg = round(710.7 * kph / maf);
+        if (mpg > 99) {mpg = 99;}
+        if (mpg <= 9) {
+          String strmpg = String(mpg);
+          strmpg = ("0" + strmpg);
+          tft.drawString(strmpg, 60, 70, 8);}
+        else {
+          tft.drawString(String(mpg), 60, 70, 8);}
+        Serial.print("KPH: "); Serial.println(kph);
+        Serial.print("MAF: "); Serial.println(maf);
+        Serial.print("MPG: "); Serial.println(mpg);
+        calculatedDelay();
+        obdGet = RPM;}
+      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        tft.drawString(String("---"), 60, 70, 8);
+        myELM327.printError();
+        calculatedDelay();
+        obdGet = RPM;}
+      break;
+    }
+
+    case UN__USED:{} // If used, check 'case MPG:' and 'obdState' in defined values.  
+
+    default:
+    obdGet = RPM;
+    break;
+  }
+}
+
+void timer() {
+  seconds = (millis() / 1000UL);
+  seconds = seconds % (24 * 3600);
+  hours = seconds / 3600;
+  seconds %= 3600;
+  minutes = seconds / 60;
+  seconds %= 60;
+
+  if (seconds <= 9 && minutes <= 9) {
+    String tempSeconds = "0" + String(seconds);
+    String tempMinutes = "0" + String(minutes);
+    timeWhileOn = (String(hours)+":"+tempMinutes+":"+tempSeconds);
+  } else if (seconds <= 9) {
+    String tempSeconds = "0" + String(seconds);
+    timeWhileOn = (String(hours)+":"+String(minutes)+":"+tempSeconds);
+  } else if (minutes <= 9) {
+    String tempMinutes = "0" + String(minutes);
+    timeWhileOn = (String(hours)+":"+tempMinutes+":"+String(seconds));
+  } else { 
+    timeWhileOn = (String(hours)+":"+String(minutes)+":"+String(seconds));
+  }
+
+  tft.setTextColor(TFT_GRAY, TFT_BLACK);
+  tft.drawString(timeWhileOn, 30, 265, 7);
+}
+
+void calculatedDelay() {
+  lock = false;
+  timeDelay = String(millis() - timePrevious);
+  Serial.println(timePrevious);
+  Serial.print("Delay: " + timeDelay + " --"); Serial.println(millis());
+  
+  if (timeDelay.toInt() <= 9) {
+    timeDelay = ("00" + timeDelay);
+  }
+  else if (timeDelay.toInt() <= 99) {
+    timeDelay = ("0" + timeDelay);
+  }
+  else if (timeDelay.toInt() > 999) {
+    timeDelay = "999";
+  }
+
+  switch (obdGet) {
+    case RPM:{
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString(timeDelay, 450, 300, 2);
+      Serial.println("Calculated delay: " + timeDelay);
+      Serial.println("---------------------------\n\n");
+      break;
+    }
+    case SPEED:{
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString(timeDelay, 450, 140, 2);
+      Serial.println("Calculated delay: " + timeDelay);
+      Serial.println("---------------------------\n\n");
+      break;
+    }
+    case MPG:{
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString(timeDelay, 220, 140, 2);
+      Serial.println("Calculated delay: " + timeDelay);
+      Serial.println("---------------------------\n\n");
+      break;
+    }
+  }
+}
