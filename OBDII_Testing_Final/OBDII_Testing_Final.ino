@@ -1,41 +1,30 @@
 /*
-ESP32_TFT_ODB2_v2.ino - SIMULATION VERSION
+ESP32_TFT_ODB2_v2.ino - SIM-SELECT VERSION
 By Olme Matias
 Last updated 10/19/2025
 
-- Set SIMULATION_MODE to 1 to generate fake data without needing the car.
-- Set SIMULATION_MODE to 0 to run with the ELM327 adapter.
-- Restored checkModeButton() and checkDimming() function definitions.
-- Restored user's specific coordinates and layout for Mode 1.
-- Removed TFT_YELLOW define.
-- Restored barWidth definition.
+- Hold the Mode Button during startup to enter Simulation Mode.
+- If the button is not pressed, it will start in normal Car Mode.
+- The choice between modes is now made at runtime, not compile time.
 */
-
-// ++++++++++++++++++++++++++++++++++++++++++++++++++++++
-// +++   SET TO 1 FOR SIMULATION, 0 FOR CAR USE       +++
-#define SIMULATION_MODE 1
-// ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include "Free_Fonts.h"
 #include "ES.h"  // EwoShy (Must be in the same sketch folder)
-
-#if !SIMULATION_MODE
 #include "ELMduino.h"
 #include "BluetoothSerial.h"
-#endif
 
 
 //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗S DISPLAY SETTINGS, AVERAGE, & BLUETOOTH/ELM
 TFT_eSPI tft = TFT_eSPI();
-#if !SIMULATION_MODE
+
+// --- Real Hardware Objects ---
 BluetoothSerial SerialBT;
 ELM327 myELM327;
 #define ELM_PORT SerialBT
-#else
-// Create dummy objects for simulation to compile
-class DummyBluetooth {};
+
+// --- Simulation Objects ---
 class DummyELM327 {
 public:
   int nb_rx_state = 0;
@@ -60,16 +49,15 @@ public:
     return 85 - ((millis() / 60000) % 80);
   }
 };
-DummyBluetooth SerialBT;
-DummyELM327 myELM327;
-#define ELM_PORT SerialBT
-#define ELM_SUCCESS 1
-#define ELM_GETTING_MSG 0
-#endif
+DummyELM327 dummyELM; // Create an instance of the dummy object
+
 
 #define DEBUG_PORT Serial
 #define TFT_GRAY 0xAD55
 #define TFT_DARKRED 0xB000
+#define ELM_SUCCESS 1
+#define ELM_GETTING_MSG 0
+
 
 //‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ DEFINED VALUES
 typedef enum { RPM,
@@ -78,7 +66,7 @@ typedef enum { RPM,
                MPG,
                FUEL } obdState;
 obdState obdGet = RPM;
-uint16_t loopCounter = 0;  // Used in Mode 1
+uint16_t loopCounter = 0;
 
 // --- OBD Data Globals ---
 uint16_t rpm;
@@ -122,6 +110,7 @@ uint64_t timeStopedPrevious = 0;
 uint64_t timePrevious;
 bool lock = false;
 String timeDelay;
+bool useSimulation = false; // Flag to select simulation mode at runtime
 
 // --- Hardware/Mode Globals ---
 const int modeButtonPin = 34;
@@ -132,7 +121,7 @@ unsigned long lastButtonPress = 0;
 unsigned long debounceDelay = 250;
 
 // --- Layout Globals ---
-const int barWidth = 40;  // <<< --- RESTORED THIS LINE
+const int barWidth = 40;
 
 uint8_t address[6] = { 0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33 };
 
@@ -151,15 +140,25 @@ void calculateAverage();
 
 
 void setup() {
-  tft.init();
-  tft.setRotation(1);
   Serial.begin(115200);
-
-#if !SIMULATION_MODE
-  ELM_PORT.begin("404 Unknown", true);
-#endif
+  tft.init();
+  tft.setRotation(3);
 
   pinMode(modeButtonPin, INPUT_PULLUP);
+  if (digitalRead(modeButtonPin) == LOW) {
+    useSimulation = true;
+    Serial.println(">>>> SIMULATION MODE ENABLED <<<<");
+  } else {
+    useSimulation = false;
+    Serial.println(">>>> CAR MODE ENABLED <<<<");
+  }
+  // --- End of Check ---
+
+
+  if (!useSimulation) {
+      ELM_PORT.begin("404 Unknown", true);
+  }
+
   pinMode(ldrPin, INPUT);
   pinMode(brightnessControlPin, OUTPUT);
   digitalWrite(brightnessControlPin, LOW);
@@ -182,21 +181,21 @@ void setup() {
 }
 
 void connect() {
-#if SIMULATION_MODE
-  Serial.println("SIMULATION MODE: Skipping ELM327 connection.");
-#else
-  if (!ELM_PORT.connect(address)) {
-    Serial.println("Connection Error 1");
-    delay(2000);
-    ESP.restart();
+  if (useSimulation) {
+    Serial.println("SIMULATION MODE: Skipping ELM327 connection.");
+  } else {
+    if (!ELM_PORT.connect(address)) {
+      Serial.println("Connection Error 1");
+      delay(2000);
+      ESP.restart();
+    }
+    if (!myELM327.begin(ELM_PORT, true, 2000)) {
+      Serial.println("Connection Error 2");
+      delay(2000);
+      ESP.restart();
+    }
+    Serial.println("CONNECTED TO ELM327!");
   }
-  if (!myELM327.begin(ELM_PORT, true, 2000)) {
-    Serial.println("Connection Error 2");
-    delay(2000);
-    ESP.restart();
-  }
-  Serial.println("CONNECTED TO ELM327!");
-#endif
 }
 
 // ----------------------------------------------------------------
@@ -204,10 +203,6 @@ void connect() {
 // ----------------------------------------------------------------
 
 void checkModeButton() {
-  /*
-    Checks if the mode button is pressed and cycles the displayMode.
-    Includes a 250ms debounce and resets the state machine.
-  */
   if (millis() - lastButtonPress > debounceDelay) {
     if (digitalRead(modeButtonPin) == LOW) {
       lastButtonPress = millis();
@@ -234,17 +229,13 @@ void checkModeButton() {
 }
 
 void checkDimming() {
-  /*
-    Reads the LDR and sets the display brightness HIGH or LOW
-    by controlling the transistor switch in the VCC path.
-  */
   int lightLevel = analogRead(ldrPin);
   int threshold = 2000;
 
   if (lightLevel < threshold) {
-    digitalWrite(brightnessControlPin, HIGH);
-  } else {
     digitalWrite(brightnessControlPin, LOW);
+  } else {
+    digitalWrite(brightnessControlPin, HIGH);
   }
 }
 
@@ -276,16 +267,17 @@ void mode1() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        rpm = myELM327.rpm();
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(50, 100));
-#else
-        float_t tempRPM = myELM327.rpm();
-        if (myELM327.nb_rx_state == ELM_SUCCESS) rpm = (uint16_t)tempRPM;
-#endif
+        
+        if (useSimulation) {
+            rpm = dummyELM.rpm();
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(50, 100));
+        } else {
+            float_t tempRPM = myELM327.rpm();
+            if (myELM327.nb_rx_state == ELM_SUCCESS) rpm = (uint16_t)tempRPM;
+        }
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) == ELM_SUCCESS) {
           calculateAverage();
           calculateDelay();
           if (timeDelay.toInt() <= 200) tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
@@ -315,7 +307,7 @@ void mode1() {
           tft.drawString("----", 420, 80, 6);
           myELM327.printError();
         }
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = ALV;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = ALV;
         break;
       }
 
@@ -325,16 +317,17 @@ void mode1() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        kph = myELM327.kph();
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(50, 100));
-#else
-        uint16_t tempKPH = myELM327.kph();
-        if (myELM327.nb_rx_state == ELM_SUCCESS) kph = tempKPH;
-#endif
+        
+        if (useSimulation) {
+            kph = dummyELM.kph();
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(50, 100));
+        } else {
+            uint16_t tempKPH = myELM327.kph();
+            if (myELM327.nb_rx_state == ELM_SUCCESS) kph = tempKPH;
+        }
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) == ELM_SUCCESS) {
           if (kph > 200) {
             Serial.println("!! BAD KPH DATA");
             calculateDelay();
@@ -374,7 +367,7 @@ void mode1() {
           tft.drawString("--", 300, 80, 6);
           myELM327.printError();
         }
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) {
           obdGet = MPG;
         }
         break;
@@ -386,16 +379,17 @@ void mode1() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        load = myELM327.engineLoad();
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(70, 110));
-#else
-        float_t tempLoad = myELM327.engineLoad();
-        if (myELM327.nb_rx_state == ELM_SUCCESS) load = (uint16_t)tempLoad;
-#endif
+        
+        if (useSimulation) {
+            load = dummyELM.engineLoad();
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(70, 110));
+        } else {
+            float_t tempLoad = myELM327.engineLoad();
+            if (myELM327.nb_rx_state == ELM_SUCCESS) load = (uint16_t)tempLoad;
+        }
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) == ELM_SUCCESS) {
           calculateAverage();
           calculateDelay();
           tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -408,7 +402,7 @@ void mode1() {
           tft.drawString("LOAD:--", 50, 275, 4);
           myELM327.printError();
         }
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = FUEL;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = FUEL;
         break;
       }
 
@@ -418,16 +412,17 @@ void mode1() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        fuel = myELM327.fuelLevel();
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(120, 180));
-#else
-        float_t tempFuel = myELM327.fuelLevel();
-        if (myELM327.nb_rx_state == ELM_SUCCESS) fuel = (uint16_t)tempFuel;
-#endif
+        
+        if (useSimulation) {
+            fuel = dummyELM.fuelLevel();
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(120, 180));
+        } else {
+            float_t tempFuel = myELM327.fuelLevel();
+            if (myELM327.nb_rx_state == ELM_SUCCESS) fuel = (uint16_t)tempFuel;
+        }
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) == ELM_SUCCESS) {
           calculateAverage();
           calculateDelay();
           tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -440,7 +435,7 @@ void mode1() {
           tft.drawString("FUEL:--", 50, 305, 4);
           myELM327.printError();
         }
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = MPH;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = MPH;
         break;
       }
 
@@ -450,24 +445,29 @@ void mode1() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        if (rpm < 900) mpg = 99;
-        else mpg = 60 - (rpm / 100);
-        if (mpg < 0) mpg = 0;
-        if (mph < 5) mpg = 0;
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(100, 150));
-#else
-        float tempMAF = myELM327.mafRate();
-        if (myELM327.nb_rx_state == ELM_SUCCESS && tempMAF > 0) {
-          maf = tempMAF;
-          mpg = round((14.7 * 6.17 * 4.54 * kph * 0.621371) / (3600 * maf / 100));
+        
+        bool success = false;
+        if (useSimulation) {
+            if (rpm < 900) mpg = 99;
+            else mpg = 60 - (rpm / 100);
+            if (mpg < 0) mpg = 0;
+            if (mph < 5) mpg = 0;
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(100, 150));
+            success = (dummyELM.nb_rx_state == ELM_SUCCESS);
         } else {
-          myELM327.nb_rx_state = 0;
+            float tempMAF = myELM327.mafRate();
+            if (myELM327.nb_rx_state == ELM_SUCCESS && tempMAF > 0) {
+              maf = tempMAF;
+              mpg = round((14.7 * 6.17 * 4.54 * kph * 0.621371) / (3600 * maf / 100));
+              success = true;
+            } else {
+              myELM327.nb_rx_state = 0;
+              success = false;
+            }
         }
-#endif
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if (success) {
           if (mpg > 99) { mpg = 99; }
           calculateAverage();
           calculateDelay();
@@ -504,7 +504,7 @@ void mode1() {
           tft.drawString("--", 120, 130, 8);
           myELM327.printError();
         }
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = RPM;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = RPM;
         break;
       }
     default: obdGet = RPM; break;
@@ -512,7 +512,6 @@ void mode1() {
 }
 
 void mode2() {
-  // --- Draw static layout & placeholders ONCE when mode is selected ---
   if (loopCounter == 0) {
     tft.setTextColor(TFT_GRAY, TFT_BLACK);
     tft.setFreeFont(FF41);
@@ -531,7 +530,6 @@ void mode2() {
     tft.drawFastVLine(350, 0, 170, TFT_GRAY);
   }
 
-  // --- Handle dynamic data (MPH & MPG) ---
   switch (obdGet) {
     case MPH:
       {
@@ -539,16 +537,17 @@ void mode2() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        kph = myELM327.kph();
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(50, 100));
-#else
-        uint16_t tempKPH = myELM327.kph();
-        if (myELM327.nb_rx_state == ELM_SUCCESS) kph = tempKPH;
-#endif
+        
+        if (useSimulation) {
+            kph = dummyELM.kph();
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(50, 100));
+        } else {
+            uint16_t tempKPH = myELM327.kph();
+            if (myELM327.nb_rx_state == ELM_SUCCESS) kph = tempKPH;
+        }
 
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) == ELM_SUCCESS) {
           if (kph > 200) {
             Serial.println("!! BAD KPH DATA");
             mph = 0;
@@ -559,7 +558,7 @@ void mode2() {
             mph = round(kph * 0.621371);
             (mph <= 5) ? stopedTimer(true) : stopedTimer(false);
             calculateAverage();
-            calculateDelay(); // <-- This was the call I fixed/added
+            calculateDelay();
 
             if (timeDelay.toInt() <= 200) tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
             else tft.setTextColor(TFT_DARKRED, TFT_BLACK);
@@ -594,7 +593,7 @@ void mode2() {
         }
 
 
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = MPG;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = MPG;
         break;
       }
 
@@ -604,25 +603,30 @@ void mode2() {
           timePrevious = millis();
           lock = true;
         }
-#if SIMULATION_MODE
-        float simRPM = myELM327.rpm();
-        if (simRPM < 900) mpg = 99;
-        else mpg = 60 - (simRPM / 100);
-        if (mpg < 0) mpg = 0;
-        if (mph < 5) mpg = 0;
-        myELM327.nb_rx_state = ELM_SUCCESS;
-        delay(random(100, 150));
-#else
-        float tempMAF = myELM327.mafRate();
-        if (myELM327.nb_rx_state == ELM_SUCCESS && tempMAF > 0) {
-          maf = tempMAF;
-          mpg = round((14.7 * 6.17 * 4.54 * kph * 0.621371) / (3600 * maf / 100));
+        
+        bool success = false;
+        if (useSimulation) {
+            float simRPM = dummyELM.rpm();
+            if (simRPM < 900) mpg = 99;
+            else mpg = 60 - (simRPM / 100);
+            if (mpg < 0) mpg = 0;
+            if (mph < 5) mpg = 0;
+            dummyELM.nb_rx_state = ELM_SUCCESS;
+            delay(random(100, 150));
+            success = (dummyELM.nb_rx_state == ELM_SUCCESS);
         } else {
-          myELM327.nb_rx_state = 0;
+            float tempMAF = myELM327.mafRate();
+            if (myELM327.nb_rx_state == ELM_SUCCESS && tempMAF > 0) {
+              maf = tempMAF;
+              mpg = round((14.7 * 6.17 * 4.54 * kph * 0.621371) / (3600 * maf / 100));
+              success = true;
+            } else {
+              myELM327.nb_rx_state = 0;
+              success = false;
+            }
         }
-#endif
-
-        if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        
+        if (success) {
           if (mpg > 99) { mpg = 99; }
           calculateAverage();
           calculateDelay();
@@ -665,7 +669,7 @@ void mode2() {
           myELM327.printError();
         }
 
-        if (myELM327.nb_rx_state != ELM_GETTING_MSG) obdGet = MPH;
+        if ((useSimulation ? dummyELM.nb_rx_state : myELM327.nb_rx_state) != ELM_GETTING_MSG) obdGet = MPH;
         break;
       }
 

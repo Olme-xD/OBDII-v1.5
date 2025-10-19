@@ -15,7 +15,7 @@ Last updated 10/19/2025
 #include "BluetoothSerial.h"
 
 
-//‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗S DISPLAY SETTINGS, AVERAGE, & BLUETOOTH/ELM
+//‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗ DISPLAY SETTINGS, AVERAGE, & BLUETOOTH/ELM
 TFT_eSPI tft = TFT_eSPI();
 BluetoothSerial SerialBT;
 ELM327 myELM327;
@@ -106,7 +106,7 @@ void calculateAverage();
 
 void setup() {
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(3);
   Serial.begin(115200);
 
   ELM_PORT.begin("404 Unknown", true);
@@ -190,9 +190,9 @@ void checkDimming() {
   int threshold = 2000;
 
   if (lightLevel < threshold) {
-    digitalWrite(brightnessControlPin, HIGH);
-  } else {
     digitalWrite(brightnessControlPin, LOW);
+  } else {
+    digitalWrite(brightnessControlPin, HIGH);
   }
 }
 
